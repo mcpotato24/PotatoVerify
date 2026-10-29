@@ -10,15 +10,20 @@ async function main({ logger = console } = {}) {
 	const config = loadConfig();
 	const users = openDatabase(config.databasePath);
 	let bot;
-	let closed = false;
+	let shutdownPromise;
 
-	const shutdown = () => {
-		if (closed) return;
-		closed = true;
+	const shutdown = async () => {
+		if (shutdownPromise) return shutdownPromise;
 		process.removeListener('SIGINT', shutdown);
 		process.removeListener('SIGTERM', shutdown);
-		bot?.destroy();
-		users.close();
+		shutdownPromise = (async () => {
+			try {
+				await bot?.destroy();
+			} finally {
+				users.close();
+			}
+		})();
+		return shutdownPromise;
 	};
 
 	try {
@@ -29,7 +34,7 @@ async function main({ logger = console } = {}) {
 		await bot.login(config.token);
 		return { bot, users, shutdown };
 	} catch (error) {
-		shutdown();
+		await shutdown();
 		throw error;
 	}
 }

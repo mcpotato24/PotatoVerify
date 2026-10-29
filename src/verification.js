@@ -9,11 +9,14 @@ function isValidUuid(uuid) {
 }
 
 function displayDate(value) {
+	const date = value instanceof Date ? value : new Date(value);
+	if (Number.isNaN(date.getTime())) return '알 수 없음';
+
 	return new Intl.DateTimeFormat('ko-KR', {
 		timeZone: 'Asia/Seoul',
 		dateStyle: 'medium',
 		timeStyle: 'medium',
-	}).format(new Date(value));
+	}).format(date);
 }
 
 function userValue(user, ...names) {
@@ -24,20 +27,48 @@ function userValue(user, ...names) {
 }
 
 function duplicateMessage(existing, adminRoleId) {
-	const verifiedAt = userValue(existing, 'verifiedAt', 'firstVerifiedAt', 'first_verified_at');
+	const verifiedAt = userValue(existing, 'first_verified_at', 'firstVerifiedAt', 'verifiedAt');
 	const suffix = verifiedAt ? ` (최초 인증: ${displayDate(verifiedAt)})` : '';
 	return `이미 인증된 계정입니다. <@&${adminRoleId}> 관리자에게 문의해 주세요.${suffix}`;
 }
 
 async function setRole(member, roleId, shouldHaveRole) {
 	const hasRole = member.roles.cache.has(roleId);
-	if (shouldHaveRole && !hasRole) await member.roles.add(roleId);
-	if (!shouldHaveRole && hasRole) await member.roles.remove(roleId);
+	if (shouldHaveRole && !hasRole) {
+		await member.roles.add(roleId);
+		return true;
+	}
+	if (!shouldHaveRole && hasRole) {
+		await member.roles.remove(roleId);
+		return true;
+	}
+	return false;
 }
 
 async function syncMemberRoles(member, isVerified, { verifiedRoleId, unverifiedRoleId }) {
-	await setRole(member, verifiedRoleId, isVerified);
-	await setRole(member, unverifiedRoleId, !isVerified);
+	if (!isVerified) {
+		await setRole(member, verifiedRoleId, false);
+		await setRole(member, unverifiedRoleId, true);
+		return;
+	}
+
+	const addedVerifiedRole = await setRole(member, verifiedRoleId, true);
+
+	try {
+		await setRole(member, unverifiedRoleId, false);
+	} catch (error) {
+		if (!addedVerifiedRole) throw error;
+		try {
+			await member.roles.remove(verifiedRoleId);
+		} catch (compensationError) {
+			throw new AggregateError(
+				[error, compensationError],
+				'Discord 역할 동기화 및 verified 역할 보상 제거에 실패했습니다.',
+				{ cause: error },
+			);
+		}
+		throw error;
+	}
 }
 
 async function registerVerification({

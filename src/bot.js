@@ -7,6 +7,7 @@ const {
 	GatewayIntentBits,
 	PermissionFlagsBits,
 	REST,
+	RESTJSONErrorCodes,
 	Routes,
 	SlashCommandBuilder,
 } = require('discord.js');
@@ -83,7 +84,13 @@ function createCommandHandlers({ config, users, getMinecraftProfile, logger }) {
 		['수동등록', async interaction => {
 			await interaction.deferReply({ ephemeral: true });
 			const target = interaction.options.getUser('사용자', true);
-			const member = await interaction.guild.members.fetch(target.id).catch(() => null);
+			let member;
+			try {
+				member = await interaction.guild.members.fetch(target.id);
+			} catch (error) {
+				if (error?.code !== RESTJSONErrorCodes.UnknownMember) throw error;
+				member = null;
+			}
 			const result = await registerVerification({
 				...registrationOptions,
 				minecraftName: interaction.options.getString('닉네임', true),
@@ -110,10 +117,10 @@ function createCommandHandlers({ config, users, getMinecraftProfile, logger }) {
 				return interaction.reply({ content: '인증 정보를 찾을 수 없습니다.', ephemeral: true });
 			}
 
-			const discordId = userValue(user, 'discordId', 'discord_id');
-			const uuid = userValue(user, 'uuid', 'mcUuid', 'mc_uuid');
-			const verifiedAt = userValue(user, 'verifiedAt', 'firstVerifiedAt', 'first_verified_at');
-			const lastVerifiedAt = userValue(user, 'lastVerifiedAt', 'last_verified_at') || verifiedAt;
+			const discordId = userValue(user, 'discord_id', 'discordId');
+			const uuid = userValue(user, 'mc_uuid', 'mcUuid', 'uuid');
+			const verifiedAt = userValue(user, 'first_verified_at', 'firstVerifiedAt', 'verifiedAt');
+			const lastVerifiedAt = userValue(user, 'last_verified_at', 'lastVerifiedAt') ?? verifiedAt;
 			return interaction.reply({
 				content: `Discord: <@${discordId}>\nMinecraft UUID: \`${uuid}\`\n최초 인증: ${displayDate(verifiedAt)}\n마지막 인증: ${displayDate(lastVerifiedAt)}`,
 				ephemeral: true,
