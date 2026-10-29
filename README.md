@@ -1,35 +1,69 @@
 # 감자서버 보안 인증 Discord 봇
 
-Minecraft 계정과 Discord 사용자를 SQLite에 연결해 관리하는 인증 봇입니다.
+Minecraft 계정과 Discord 사용자를 SQLite로 연결하고, 서버 재가입 시 인증 상태에 맞는 역할을 다시 부여하는 Discord 봇입니다.
 
-## 설정 및 실행
+## 요구 사항
 
-Node.js 22.5 이상이 필요합니다. 의존성을 설치하고 환경변수 파일을 만듭니다.
+- Node.js 26.13.0 이상, 27 미만
+- Discord 봇의 **Server Members Intent**
+- 인증 역할과 미인증 역할보다 위에 있는 봇 역할 및 역할 관리 권한
+
+## 설치와 실행
 
 ```bash
 npm install
 cp .env.example .env
-```
-
-`.env`에 Discord 봇 토큰, 서버 ID와 역할 ID를 입력한 뒤 실행합니다.
-
-```bash
 npm start
 ```
 
-봇이 시작되면 지정한 서버에 슬래시 명령어가 자동 등록됩니다. Discord Developer Portal의 Bot 설정에서 **Server Members Intent**를 활성화해야 합니다. 봇에는 역할 관리 권한이 있어야 하며, 봇 역할은 인증 역할과 미인증 역할보다 위에 있어야 합니다.
+`.env`에서 다음 값을 설정합니다.
 
-## 슬래시 명령어
+| 변수 | 내용 |
+| --- | --- |
+| `DISCORD_TOKEN` | Discord Developer Portal에서 발급한 봇 토큰 |
+| `GUILD_ID` | 슬래시 명령을 등록할 서버 ID |
+| `ADMIN_ROLE_ID` | 관리자 명령을 사용할 수 있는 역할 ID |
+| `VERIFIED_ROLE_ID` | 인증된 사용자 역할 ID |
+| `UNVERIFIED_ROLE_ID` | 미인증 사용자 역할 ID |
+| `DATABASE_PATH` | 선택 항목. SQLite 파일 경로이며 기본값은 `user-data.sqlite` |
 
-- `/인증 닉네임`: Minecraft 계정을 인증합니다.
-- `/수동등록 사용자 닉네임`: 관리자가 사용자를 수동 등록합니다.
-- `/인증조회 [사용자] [uuid]`: 관리자가 저장된 인증 정보를 조회합니다.
+Discord ID와 역할 ID는 17~20자리 숫자여야 하고, 세 역할 ID는 서로 달라야 합니다. 상대 `DATABASE_PATH`는 봇을 실행한 디렉터리를 기준으로 해석됩니다.
+
+테스트는 다음 명령으로 실행합니다.
+
+```bash
+npm test
+```
+
+## 슬래시 명령
+
+- `/인증 닉네임`: 자신의 Minecraft 계정을 인증합니다.
+- `/수동등록 사용자 닉네임`: 관리자가 다른 사용자를 등록합니다.
+- `/인증조회 [사용자] [uuid]`: 관리자가 Discord 사용자 또는 Minecraft UUID로 인증 정보를 조회합니다.
 - `/전송 내용`: 관리자가 현재 채널에 봇 메시지를 전송합니다.
 
-관리자 명령은 `ADMIN_ROLE_ID` 역할 또는 Discord의 관리자 권한을 가진 사용자만 실행할 수 있습니다.
+`/인증` 외의 명령은 Discord 관리자 권한 또는 `ADMIN_ROLE_ID` 역할이 필요합니다.
 
-## 데이터 저장과 이전
+## 데이터와 migration
 
-인증 정보는 기본적으로 `user-data.sqlite`의 `users` 테이블에 저장됩니다. Minecraft UUID와 Discord ID는 각각 중복될 수 없습니다. 최초 인증 일시와 마지막 인증 일시는 UTC ISO 형식으로 기록되고 화면에는 한국 시간으로 표시됩니다.
+SQLite schema의 현재 버전은 v2입니다. 새 DB는 즉시 v2로 생성되며, `users` 테이블은 정규화한 Minecraft UUID, Discord ID, 마지막으로 확인한 Minecraft 이름, 인증 시각(`verified_at`)을 저장합니다. Minecraft UUID와 Discord ID에는 각각 고유 제약이 있어 한 계정을 둘 이상의 사용자에게 원자적으로 등록하지 않습니다.
 
-시작할 때 기존 `user-data.json`이 있으면 유효한 Minecraft UUID와 Discord 숫자 ID가 들어 있는 행만 자동 이전합니다. 이전된 JSON은 자동 삭제하지 않습니다.
+기존 `PRAGMA user_version = 1` DB는 시작할 때 트랜잭션 안에서 v2로 migration되며 기존 사용자 행은 유지됩니다. schema version이 지원 범위를 벗어나거나 알 수 없는 구형 테이블 구조이면 시작을 중단합니다.
+
+루트의 기존 `user-data.json`은 최초 시작 시 한 번만 읽습니다. 유효한 UUID와 17~20자리 Discord ID가 있는 행만 가져오고, 완료 여부를 `schema_meta`에 기록해 이후 시작에서는 다시 가져오지 않습니다. 원본 JSON 파일은 자동으로 삭제하지 않습니다.
+
+## 파일 구조
+
+```text
+index.js              실행 진입점과 종료 처리
+src/config.js         환경변수 검증
+src/database.js       SQLite v2 schema, migration, 사용자 저장소
+src/minecraft.js      Mojang 프로필 조회
+src/verification.js   인증 등록과 역할 동기화
+src/bot.js            Discord 클라이언트, 명령 정의와 처리기
+test/                 독립적인 node:test 테스트
+.env.example          환경변수 예시
+user-data.json        기존 설치에서 사용하는 일회성 이전 원본
+```
+
+`index.js`를 모듈로 가져오는 것만으로는 봇 로그인이나 DB 생성이 시작되지 않습니다. 실제 실행은 `npm start` 또는 `node index.js`로 합니다.
