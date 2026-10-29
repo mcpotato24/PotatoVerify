@@ -1,6 +1,7 @@
 const path = require('node:path');
 
 const SNOWFLAKE_PATTERN = /^\d{17,20}$/;
+const DEFAULT_BASE_DIR = path.resolve(__dirname, '..');
 
 function requiredString(env, name) {
 	const value = env[name];
@@ -18,7 +19,7 @@ function snowflake(env, name) {
 	return value;
 }
 
-function loadConfig(env = process.env, baseDir = process.cwd()) {
+function loadConfig(env = process.env, baseDir = DEFAULT_BASE_DIR) {
 	if (env === null || typeof env !== 'object') {
 		throw new TypeError('env는 환경변수 객체여야 합니다.');
 	}

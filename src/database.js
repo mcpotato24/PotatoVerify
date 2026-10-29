@@ -1,9 +1,10 @@
 'use strict';
 
 const fs = require('node:fs');
+const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const DISCORD_ID_PATTERN = /^\d{17,20}$/;
 
 function normalizeUuid(uuid) {
@@ -41,13 +42,17 @@ function createVersionOneUsers(database) {
 	`);
 }
 
-function migrateToVersionOne(database) {
+function createSchemaMeta(database) {
 	database.exec(`
 		CREATE TABLE IF NOT EXISTS schema_meta (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		) WITHOUT ROWID;
 	`);
+}
+
+function migrateToVersionOne(database) {
+	createSchemaMeta(database);
 
 	if (!tableExists(database, 'users')) {
 		createVersionOneUsers(database);
@@ -62,22 +67,19 @@ function migrateToVersionOne(database) {
 	const isLegacy = ['mc_uuid', 'discord_id', 'first_verified_at', 'last_verified_at']
 		.every(column => columns.has(column));
 	if (!isLegacy) throw new Error('Unsupported users table schema at user_version 0');
-
-	database.exec('ALTER TABLE users RENAME TO users_legacy_v0;');
-	createVersionOneUsers(database);
-	database.exec(`
-		INSERT INTO users (mc_uuid, discord_id, minecraft_name, verified_at)
-		SELECT
-			lower(replace(mc_uuid, '-', '')),
-			discord_id,
-			'',
-			COALESCE(first_verified_at, last_verified_at)
-		FROM users_legacy_v0;
-		DROP TABLE users_legacy_v0;
-	`);
 }
 
 function migrateToVersionTwo(database) {
+	createSchemaMeta(database);
+	const columns = tableColumns(database, 'users');
+	const isLegacy = ['mc_uuid', 'discord_id', 'first_verified_at', 'last_verified_at']
+		.every(column => columns.has(column));
+	if (isLegacy) return;
+
+	const isVersionOne = ['mc_uuid', 'discord_id', 'minecraft_name', 'verified_at']
+		.every(column => columns.has(column));
+	if (!isVersionOne) throw new Error('Unsupported users table schema at user_version 1');
+
 	database.exec(`
 		CREATE TABLE users_v2 (
 			mc_uuid TEXT PRIMARY KEY
@@ -104,7 +106,75 @@ function migrateToVersionTwo(database) {
 	`);
 }
 
-const MIGRATIONS = [migrateToVersionOne, migrateToVersionTwo];
+function migrateToVersionThree(database) {
+	createSchemaMeta(database);
+	const columns = tableColumns(database, 'users');
+	const isLegacy = ['mc_uuid', 'discord_id', 'first_verified_at', 'last_verified_at']
+		.every(column => columns.has(column));
+	const isVersionTwo = ['mc_uuid', 'discord_id', 'minecraft_name', 'verified_at']
+		.every(column => columns.has(column));
+	if (!isLegacy && !isVersionTwo) {
+		throw new Error('Unsupported users table schema at user_version 2');
+	}
+
+	database.exec(`
+		CREATE TABLE users_v3 (
+			mc_uuid TEXT PRIMARY KEY
+				CHECK (
+					length(mc_uuid) = 32
+					AND mc_uuid = lower(mc_uuid)
+					AND mc_uuid NOT GLOB '*[^0-9a-f]*'
+				),
+			discord_id TEXT NOT NULL UNIQUE
+				CHECK (
+					length(discord_id) BETWEEN 17 AND 20
+					AND discord_id NOT GLOB '*[^0-9]*'
+				),
+			minecraft_name TEXT NOT NULL DEFAULT '',
+			first_verified_at TEXT NOT NULL,
+			last_verified_at TEXT NOT NULL
+		) WITHOUT ROWID;
+	`);
+
+	if (isLegacy) {
+		const minecraftName = columns.has('minecraft_name') ? 'minecraft_name' : "''";
+		database.exec(`
+			INSERT INTO users_v3 (
+				mc_uuid,
+				discord_id,
+				minecraft_name,
+				first_verified_at,
+				last_verified_at
+			)
+			SELECT
+				lower(replace(mc_uuid, '-', '')),
+				discord_id,
+				${minecraftName},
+				COALESCE(first_verified_at, last_verified_at),
+				COALESCE(last_verified_at, first_verified_at)
+			FROM users;
+		`);
+	} else {
+		database.exec(`
+			INSERT INTO users_v3 (
+				mc_uuid,
+				discord_id,
+				minecraft_name,
+				first_verified_at,
+				last_verified_at
+			)
+			SELECT mc_uuid, discord_id, minecraft_name, verified_at, verified_at
+			FROM users;
+		`);
+	}
+
+	database.exec(`
+		DROP TABLE users;
+		ALTER TABLE users_v3 RENAME TO users;
+	`);
+}
+
+const MIGRATIONS = [migrateToVersionOne, migrateToVersionTwo, migrateToVersionThree];
 
 function applyMigrations(database) {
 	let version = database.prepare('PRAGMA user_version').get().user_version;
@@ -128,6 +198,9 @@ function applyMigrations(database) {
 }
 
 function openDatabase(filePath) {
+	if (filePath !== ':memory:') {
+		fs.mkdirSync(path.dirname(path.resolve(filePath)), { recursive: true });
+	}
 	const database = new DatabaseSync(filePath);
 	let closed = false;
 
@@ -142,20 +215,26 @@ function openDatabase(filePath) {
 	}
 
 	const selectByUuid = database.prepare(`
-		SELECT mc_uuid, discord_id, minecraft_name, verified_at
+		SELECT mc_uuid, discord_id, minecraft_name, first_verified_at, last_verified_at
 		FROM users
 		WHERE mc_uuid = ?
 	`);
 	const selectByDiscordId = database.prepare(`
-		SELECT mc_uuid, discord_id, minecraft_name, verified_at
+		SELECT mc_uuid, discord_id, minecraft_name, first_verified_at, last_verified_at
 		FROM users
 		WHERE discord_id = ?
 	`);
 	const insertUser = database.prepare(`
-		INSERT INTO users (mc_uuid, discord_id, minecraft_name, verified_at)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO users (
+			mc_uuid,
+			discord_id,
+			minecraft_name,
+			first_verified_at,
+			last_verified_at
+		)
+		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT DO NOTHING
-		RETURNING mc_uuid, discord_id, minecraft_name, verified_at
+		RETURNING mc_uuid, discord_id, minecraft_name, first_verified_at, last_verified_at
 	`);
 	const deleteUser = database.prepare(`
 		DELETE FROM users
@@ -187,8 +266,16 @@ function openDatabase(filePath) {
 		const normalizedUuid = normalizeUuid(uuid);
 		const normalizedDiscordId = String(discordId);
 		const name = minecraftName == null ? '' : String(minecraftName);
-		const timestamp = verifiedAt instanceof Date ? verifiedAt.toISOString() : String(verifiedAt);
-		const user = toUser(insertUser.get(normalizedUuid, normalizedDiscordId, name, timestamp));
+		const timestamp = verifiedAt === undefined
+			? new Date().toISOString()
+			: verifiedAt instanceof Date ? verifiedAt.toISOString() : String(verifiedAt);
+		const user = toUser(insertUser.get(
+			normalizedUuid,
+			normalizedDiscordId,
+			name,
+			timestamp,
+			timestamp,
+		));
 
 		if (user) return { created: true, user };
 		return {
