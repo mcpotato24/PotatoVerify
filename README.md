@@ -25,9 +25,9 @@ npm start
 | `ADMIN_ROLE_ID` | 관리자 명령을 사용할 수 있는 역할 ID |
 | `VERIFIED_ROLE_ID` | 인증된 사용자 역할 ID |
 | `UNVERIFIED_ROLE_ID` | 미인증 사용자 역할 ID |
-| `DATABASE_PATH` | 선택 항목. SQLite 파일 경로이며 기본값은 `user-data.sqlite` |
+| `DATABASE_PATH` | 선택 항목. SQLite 파일 경로이며 기본값은 프로젝트 루트의 `user-data.sqlite` |
 
-Discord ID와 역할 ID는 17~20자리 숫자여야 하고, 세 역할 ID는 서로 달라야 합니다. 상대 `DATABASE_PATH`는 봇을 실행한 디렉터리를 기준으로 해석됩니다.
+Discord ID와 역할 ID는 17~20자리 숫자여야 하고, 세 역할 ID는 서로 달라야 합니다. 상대 `DATABASE_PATH`는 현재 작업 디렉터리와 관계없이 프로젝트 루트를 기준으로 해석됩니다. DB 파일의 상위 디렉터리가 없으면 시작할 때 자동으로 생성합니다.
 
 테스트는 다음 명령으로 실행합니다.
 
@@ -46,9 +46,9 @@ npm test
 
 ## 데이터와 migration
 
-SQLite schema의 현재 버전은 v2입니다. 새 DB는 즉시 v2로 생성되며, `users` 테이블은 정규화한 Minecraft UUID, Discord ID, 마지막으로 확인한 Minecraft 이름, 인증 시각(`verified_at`)을 저장합니다. Minecraft UUID와 Discord ID에는 각각 고유 제약이 있어 한 계정을 둘 이상의 사용자에게 원자적으로 등록하지 않습니다.
+SQLite schema의 현재 버전은 v3입니다. 새 DB는 즉시 v3로 생성되며, `users` 테이블은 정규화한 Minecraft UUID, Discord ID, 마지막으로 확인한 Minecraft 이름, 최초 인증 시각(`first_verified_at`), 마지막 인증 시각(`last_verified_at`)을 저장합니다. Minecraft UUID와 Discord ID에는 각각 고유 제약이 있어 한 계정을 둘 이상의 사용자에게 원자적으로 등록하지 않습니다.
 
-기존 `PRAGMA user_version = 1` DB는 시작할 때 트랜잭션 안에서 v2로 migration되며 기존 사용자 행은 유지됩니다. schema version이 지원 범위를 벗어나거나 알 수 없는 구형 테이블 구조이면 시작을 중단합니다.
+기존 legacy `PRAGMA user_version = 0`/`1` DB는 서로 다른 최초·마지막 인증 시각을 그대로 보존해 v3로 migration됩니다. v2의 `verified_at`은 v3의 `first_verified_at`과 `last_verified_at` 모두에 복사됩니다. migration은 시작할 때 트랜잭션 안에서 실행되며, schema version이 지원 범위를 벗어나거나 알 수 없는 구형 테이블 구조이면 시작을 중단합니다.
 
 루트의 기존 `user-data.json`은 최초 시작 시 한 번만 읽습니다. 유효한 UUID와 17~20자리 Discord ID가 있는 행만 가져오고, 완료 여부를 `schema_meta`에 기록해 이후 시작에서는 다시 가져오지 않습니다. 원본 JSON 파일은 자동으로 삭제하지 않습니다.
 
@@ -57,7 +57,7 @@ SQLite schema의 현재 버전은 v2입니다. 새 DB는 즉시 v2로 생성되�
 ```text
 index.js              실행 진입점과 종료 처리
 src/config.js         환경변수 검증
-src/database.js       SQLite v2 schema, migration, 사용자 저장소
+src/database.js       SQLite v3 schema, migration, 사용자 저장소
 src/minecraft.js      Mojang 프로필 조회
 src/verification.js   인증 등록과 역할 동기화
 src/bot.js            Discord 클라이언트, 명령 정의와 처리기

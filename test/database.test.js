@@ -15,28 +15,74 @@ function temporaryDirectory(t) {
 	return directory;
 }
 
-test('새 데이터베이스를 SQLite schema v2로 생성한다', t => {
+test('새 데이터베이스를 SQLite schema v3로 생성한다', t => {
 	const databasePath = path.join(temporaryDirectory(t), 'users.sqlite');
 	const users = openDatabase(databasePath);
 	users.close();
 
 	const database = new DatabaseSync(databasePath, { readOnly: true });
 	t.after(() => database.close());
-	assert.equal(database.prepare('PRAGMA user_version').get().user_version, 2);
+	assert.equal(database.prepare('PRAGMA user_version').get().user_version, 3);
 	assert.deepEqual(
 		database.prepare('PRAGMA table_info(users)').all().map(column => column.name),
-		['mc_uuid', 'discord_id', 'minecraft_name', 'verified_at'],
+		['mc_uuid', 'discord_id', 'minecraft_name', 'first_verified_at', 'last_verified_at'],
 	);
 });
 
-test('user_version 1의 사용자 데이터를 v2로 보존하여 이전한다', t => {
-	const databasePath = path.join(temporaryDirectory(t), 'v1.sqlite');
-	const v1 = new DatabaseSync(databasePath);
-	v1.exec(`
-		CREATE TABLE schema_meta (
-			key TEXT PRIMARY KEY,
-			value TEXT NOT NULL
-		) WITHOUT ROWID;
+for (const version of [0, 1]) {
+	test(`legacy user_version ${version}의 서로 다른 최초·마지막 인증 시각을 v3에 보존한다`, t => {
+		const databasePath = path.join(temporaryDirectory(t), `v${version}.sqlite`);
+		const legacy = new DatabaseSync(databasePath);
+		const minecraftNameColumn = version === 1
+			? "minecraft_name TEXT NOT NULL DEFAULT '',"
+			: '';
+		const minecraftNameField = version === 1 ? ', minecraft_name' : '';
+		const minecraftNameValue = version === 1 ? ", 'PotatoPlayer'" : '';
+		legacy.exec(`
+			CREATE TABLE users (
+				mc_uuid TEXT PRIMARY KEY,
+				discord_id TEXT NOT NULL UNIQUE,
+				${minecraftNameColumn}
+				first_verified_at TEXT NOT NULL,
+				last_verified_at TEXT NOT NULL
+			);
+			INSERT INTO users (
+				mc_uuid,
+				discord_id${minecraftNameField},
+				first_verified_at,
+				last_verified_at
+			)
+			VALUES (
+				'01234567-89ab-cdef-0123-456789abcdef',
+				'223456789012345678'${minecraftNameValue},
+				'2025-01-02T03:04:05.000Z',
+				'2026-02-03T04:05:06.000Z'
+			);
+			PRAGMA user_version = ${version};
+		`);
+		legacy.close();
+
+		const users = openDatabase(databasePath);
+		t.after(() => users.close());
+		assert.equal(users.schemaVersion, 3);
+		assert.deepEqual(users.findByDiscordId('223456789012345678'), {
+			mc_uuid: '0123456789abcdef0123456789abcdef',
+			discord_id: '223456789012345678',
+			minecraft_name: version === 1 ? 'PotatoPlayer' : '',
+			first_verified_at: '2025-01-02T03:04:05.000Z',
+			last_verified_at: '2026-02-03T04:05:06.000Z',
+		});
+
+		const migrated = new DatabaseSync(databasePath, { readOnly: true });
+		t.after(() => migrated.close());
+		assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 3);
+	});
+}
+
+test('user_version 2의 verified_at을 v3의 두 인증 시각으로 복사한다', t => {
+	const databasePath = path.join(temporaryDirectory(t), 'v2.sqlite');
+	const v2 = new DatabaseSync(databasePath);
+	v2.exec(`
 		CREATE TABLE users (
 			mc_uuid TEXT PRIMARY KEY,
 			discord_id TEXT NOT NULL UNIQUE,
@@ -45,28 +91,33 @@ test('user_version 1의 사용자 데이터를 v2로 보존하여 이전한다',
 		);
 		INSERT INTO users (mc_uuid, discord_id, minecraft_name, verified_at)
 		VALUES (
-			'0123456789abcdef0123456789abcdef',
+			'1123456789abcdef0123456789abcdef',
 			'223456789012345678',
 			'PotatoPlayer',
 			'2026-01-02T03:04:05.000Z'
 		);
-		PRAGMA user_version = 1;
+		PRAGMA user_version = 2;
 	`);
-	v1.close();
+	v2.close();
 
 	const users = openDatabase(databasePath);
 	t.after(() => users.close());
-	assert.equal(users.schemaVersion, 2);
 	assert.deepEqual(users.findByDiscordId('223456789012345678'), {
-		mc_uuid: '0123456789abcdef0123456789abcdef',
+		mc_uuid: '1123456789abcdef0123456789abcdef',
 		discord_id: '223456789012345678',
 		minecraft_name: 'PotatoPlayer',
-		verified_at: '2026-01-02T03:04:05.000Z',
+		first_verified_at: '2026-01-02T03:04:05.000Z',
+		last_verified_at: '2026-01-02T03:04:05.000Z',
 	});
+});
 
-	const migrated = new DatabaseSync(databasePath, { readOnly: true });
-	t.after(() => migrated.close());
-	assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 2);
+test('중첩된 DB 디렉터리를 생성하고 데이터베이스를 연다', t => {
+	const databasePath = path.join(temporaryDirectory(t), 'state', 'sqlite', 'users.sqlite');
+	const users = openDatabase(databasePath);
+	t.after(() => users.close());
+
+	assert.equal(fs.existsSync(databasePath), true);
+	assert.equal(users.schemaVersion, 3);
 });
 
 test('UUID와 Discord ID 중복 등록을 원자적으로 거부하고 기존 행을 유지한다', t => {
@@ -104,7 +155,8 @@ test('UUID와 Discord ID 중복 등록을 원자적으로 거부하고 기존 �
 		mc_uuid: original.uuid,
 		discord_id: original.discordId,
 		minecraft_name: original.minecraftName,
-		verified_at: original.verifiedAt,
+		first_verified_at: original.verifiedAt,
+		last_verified_at: original.verifiedAt,
 	});
 });
 
@@ -139,7 +191,8 @@ test('legacy JSON은 유효한 행만 한 번 이전한다', t => {
 		mc_uuid: 'cccccccccccccccccccccccccccccccc',
 		discord_id: '523456789012345678',
 		minecraft_name: 'LegacyPlayer',
-		verified_at: '2025-01-02T03:04:05.000Z',
+		first_verified_at: '2025-01-02T03:04:05.000Z',
+		last_verified_at: '2025-01-02T03:04:05.000Z',
 	});
 
 	fs.writeFileSync(legacyPath, JSON.stringify({

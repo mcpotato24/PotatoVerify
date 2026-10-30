@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
 
@@ -26,6 +28,23 @@ test('설정을 검증하고 상대 DB 경로를 기준 디렉터리에서 해�
 		unverifiedRoleId: VALID_ENV.UNVERIFIED_ROLE_ID,
 		databasePath: path.resolve('/srv/potatoverify', 'data/users.sqlite'),
 	});
+});
+
+test('다른 cwd에서도 기본 DB 경로를 프로젝트 루트에서 해석한다', t => {
+	const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'potatoverify-config-'));
+	t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+	const env = { ...VALID_ENV };
+	delete env.DATABASE_PATH;
+	const originalCwd = process.cwd();
+	let config;
+	try {
+		process.chdir(directory);
+		config = loadConfig(env);
+	} finally {
+		process.chdir(originalCwd);
+	}
+
+	assert.equal(config.databasePath, path.resolve(__dirname, '..', 'user-data.sqlite'));
 });
 
 test('필수 설정 누락, 잘못된 ID, 역할 ID 중복을 거부한다', () => {
